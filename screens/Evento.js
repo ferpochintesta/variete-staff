@@ -1,24 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, FlatList, TextInput, ScrollView, Modal, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, FlatList, TextInput, ScrollView, Modal } from 'react-native';
 import { db } from '../firebase';
-import { collection, onSnapshot, addDoc, deleteDoc, doc, updateDoc, setDoc } from 'firebase/firestore';
+import { collection, onSnapshot, addDoc, deleteDoc, doc, setDoc } from 'firebase/firestore';
 
 const LOGOS_DISPONIBLES = ['🎭', '🎸', '🎤', '🎪', '💃', '🤡', '🪄', '🥁', '🎨', '🔥', '🎵'];
 
 export default function EventoScreen() {
   const [modo, setModo] = useState('grilla'); 
   const [loading, setLoading] = useState(false);
-  const [modalFormVisible, setModalFormVisible] = useState(false); // Para el botón flotante
+  const [modalFormVisible, setModalFormVisible] = useState(false);
 
   // Estados Base de Datos
   const [artistas, setArtistas] = useState([]);
   const [grilla, setGrilla] = useState([]);
   const [categoriasUnicas, setCategoriasUnicas] = useState([]);
   
-  // Reloj y Fecha
-  const [fechaEvento, setFechaEvento] = useState(''); // Ej: "26/05/2026"
-  const [inputFecha, setInputFecha] = useState('');
-  const [horaActual, setHoraActual] = useState(new Date());
+  // Estado Manual del Evento Activo (Sincronizado)
+  const [eventoActivoId, setEventoActivoId] = useState(null);
 
   // Estados Formulario Artistas
   const [artNombre, setArtNombre] = useState('');
@@ -33,14 +31,10 @@ export default function EventoScreen() {
   const [isIntervalo, setIsIntervalo] = useState(false);
 
   useEffect(() => {
-    // 1. Reloj que corre cada 1 minuto para actualizar la línea de tiempo
-    const timer = setInterval(() => setHoraActual(new Date()), 60000);
-
-    // 2. Traer Fecha del evento compartida
-    const unsubMeta = onSnapshot(doc(db, 'metadata', 'evento'), (docSnap) => {
-      if (docSnap.exists() && docSnap.data().fecha) {
-        setFechaEvento(docSnap.data().fecha);
-        setInputFecha(docSnap.data().fecha);
+    // 1. Escuchar cuál es el evento activo marcado manualmente
+    const unsubMeta = onSnapshot(doc(db, 'metadata', 'estadoEvento'), (docSnap) => {
+      if (docSnap.exists()) {
+        setEventoActivoId(docSnap.data().activoId || null);
       }
     });
 
@@ -59,36 +53,20 @@ export default function EventoScreen() {
         lista.push({ id: d.id, ...data });
         if (data.categoria) cats.add(data.categoria);
       });
+      // Ordenamos alfabéticamente/numéricamente por la hora escrita (Ej: "21:30")
       lista.sort((a, b) => a.hora.localeCompare(b.hora));
       setGrilla(lista);
       setCategoriasUnicas(Array.from(cats));
     });
 
-    return () => { clearInterval(timer); unsubMeta(); unsubArtistas(); unsubGrilla(); };
+    return () => { unsubMeta(); unsubArtistas(); unsubGrilla(); };
   }, []);
 
-  // --- LÓGICA DE TIEMPO (CRONOGRAMA VIVO) ---
-  const guardarFechaEvento = async () => {
-    if (!inputFecha.includes('/')) return Alert.alert("Formato", "Usá el formato DD/MM/YYYY (ej: 26/05/2026)");
-    await setDoc(doc(db, 'metadata', 'evento'), { fecha: inputFecha }, { merge: true });
-    Alert.alert("Actualizado", "Fecha del evento guardada para todo el staff.");
-  };
-
-  // Transforma "21:30" y la fecha en un objeto Date real para comparar
-  const parseEventTime = (horaStr) => {
-    if (!fechaEvento || !fechaEvento.includes('/')) return new Date();
-    
-    // Desglosamos la fecha (ej: "26/05/2026")
-    const [day, month, year] = fechaEvento.split('/');
-    // Desglosamos la hora (ej: "16:00")
-    const [h, m] = horaStr.split(':');
-    
-    // Creamos la fecha localmente en Montevideo
-    // Al usar Date(year, month-1, day, h, m), el navegador/celular 
-    // lo interpreta según la zona horaria del sistema.
-    const eventDate = new Date(year, month - 1, day, h, m);
-    
-    return eventDate;
+  // --- LÓGICA MARCADOR MANUAL ---
+  const marcarComoActivo = async (id) => {
+    // Si el id que tocamos es el mismo que ya está activo, lo desmarcamos (null)
+    const nuevoId = eventoActivoId === id ? null : id;
+    await setDoc(doc(db, 'metadata', 'estadoEvento'), { activoId: nuevoId }, { merge: true });
   };
 
   // --- LÓGICA ARTISTAS ---
@@ -116,7 +94,7 @@ export default function EventoScreen() {
     try {
       await addDoc(collection(db, 'grilla'), { hora: gridHora, nombre: gridNombre, categoria: gridCategoria, isIntervalo, artistasIds: isIntervalo ? [] : gridArtistasSelect });
       setGridHora(''); setGridNombre(''); setGridCategoria(''); setGridArtistasSelect([]); setIsIntervalo(false);
-      setModalFormVisible(false); // Cierra el modal flotante
+      setModalFormVisible(false);
     } catch (e) {} setLoading(false);
   };
 
@@ -128,6 +106,9 @@ export default function EventoScreen() {
     if (!idsArray || idsArray.length === 0) return '';
     return artistas.filter(a => idsArray.includes(a.id)).map(a => `${a.logo} ${a.nombre}`).join(' • ');
   };
+
+  // Encontramos la posición del evento activo para atenuar los anteriores
+  const indiceActivo = grilla.findIndex(e => e.id === eventoActivoId);
 
   return (
     <View style={styles.container}>
@@ -168,42 +149,41 @@ export default function EventoScreen() {
 
       {modo === 'grilla' && (
         <View style={styles.content}>
-          
-          {/* Selector de Fecha */}
-          <View style={styles.fechaContainer}>
-            <Text style={{color: '#888', fontWeight: 'bold'}}>Fecha Evento:</Text>
-            <TextInput style={styles.inputFecha} placeholder="DD/MM/YYYY" placeholderTextColor="#555" value={inputFecha} onChangeText={setInputFecha} />
-            <TouchableOpacity style={styles.btnFecha} onPress={guardarFechaEvento}>
-              <Text style={{color: '#000', fontWeight: 'bold', fontSize: 12}}>Guardar</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* LISTA DEL CRONOGRAMA */}
           <FlatList 
             data={grilla} 
             keyExtractor={i => i.id} 
-            contentContainerStyle={{paddingBottom: 80}} // Espacio para que el boton flotante no tape
+            contentContainerStyle={{paddingBottom: 80}}
             renderItem={({item, index}) => {
-              // Cálculos para la línea de tiempo
-              const thisTime = parseEventTime(item.hora);
-              const nextTime = index < grilla.length - 1 ? parseEventTime(grilla[index+1].hora) : null;
               
-              const isPast = nextTime ? horaActual >= nextTime : (horaActual.getTime() - thisTime.getTime() > 2 * 60 * 60 * 1000); // Pasado si ya empezó el siguiente, o si pasaron 2hs del último
-              const isActive = horaActual >= thisTime && (!nextTime || horaActual < nextTime);
+              // Lógica visual basada en el marcador manual
+              const isActive = item.id === eventoActivoId;
+              const isPast = indiceActivo !== -1 && index < indiceActivo;
 
               return (
                 <View style={[
                   styles.listItem, 
                   item.isIntervalo && {backgroundColor: '#111'},
-                  isPast && { opacity: 0.4 }, // Se atenúa si ya pasó
-                  isActive && { borderColor: '#deff9a', borderWidth: 2, transform: [{scale: 1.02}] } // Se ilumina si es AHORA
+                  isPast && { opacity: 0.4 }, 
+                  isActive && { borderColor: '#deff9a', borderWidth: 2, transform: [{scale: 1.02}] } 
                 ]}>
                   <View style={{flex: 1}}>
                     <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 2}}>
                       <Text style={{color: isActive ? '#deff9a' : '#fff', fontWeight: 'bold', fontSize: 16, marginRight: 10}}>{item.hora}</Text>
+                      
                       {item.categoria ? <Text style={{color: '#888', fontSize: 11, backgroundColor: '#222', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4}}>{item.categoria.toUpperCase()}</Text> : null}
-                      {isActive && <Text style={{color: '#000', backgroundColor: '#deff9a', fontSize: 10, fontWeight: 'bold', paddingHorizontal: 5, borderRadius: 4, marginLeft: 10}}>📍 AHORA</Text>}
+                      
+                      {/* Botón manual o etiqueta AHORA clickeable */}
+                      {isActive ? (
+                        <TouchableOpacity onPress={() => marcarComoActivo(item.id)}>
+                          <Text style={{color: '#000', backgroundColor: '#deff9a', fontSize: 10, fontWeight: 'bold', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, marginLeft: 10}}>📍 AHORA</Text>
+                        </TouchableOpacity>
+                      ) : (
+                        <TouchableOpacity onPress={() => marcarComoActivo(item.id)} style={styles.btnMarcar}>
+                          <Text style={{color: '#000', fontSize: 10, fontWeight: 'bold'}}>📍</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
+
                     <Text style={{color: item.isIntervalo ? '#aaa' : '#fff', fontSize: 16, fontWeight: 'bold'}}>{item.nombre} {item.isIntervalo && '☕'}</Text>
                     {!item.isIntervalo && <Text style={{color: '#ccc', fontSize: 13, marginTop: 4}}>{getArtistasNombres(item.artistasIds)}</Text>}
                   </View>
@@ -213,12 +193,10 @@ export default function EventoScreen() {
             }} 
           />
 
-          {/* BOTÓN FLOTANTE (FAB) */}
           <TouchableOpacity style={styles.fab} onPress={() => setModalFormVisible(true)}>
             <Text style={styles.fabText}>+</Text>
           </TouchableOpacity>
 
-          {/* MODAL PARA NUEVO EVENTO */}
           <Modal visible={modalFormVisible} transparent={true} animationType="slide">
             <View style={styles.modalBg}>
               <ScrollView style={styles.formCardModal} nestedScrollEnabled={true}>
@@ -282,17 +260,10 @@ const styles = StyleSheet.create({
   tabText: { color: '#888', fontWeight: 'bold', fontSize: 14 },
   tabTextActive: { color: '#deff9a' },
   content: { flex: 1, padding: 15 },
-  // Fecha
-  fechaContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1a1a1a', padding: 10, borderRadius: 8, marginBottom: 15, justifyContent: 'space-between' },
-  inputFecha: { color: '#fff', backgroundColor: '#000', paddingHorizontal: 15, paddingVertical: 5, borderRadius: 5, borderWidth: 1, borderColor: '#333', textAlign: 'center', width: 120 },
-  btnFecha: { backgroundColor: '#deff9a', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 5 },
-  // FAB (Botón Flotante)
   fab: { position: 'absolute', bottom: 20, right: 20, width: 60, height: 60, backgroundColor: '#deff9a', borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOffset: {width: 0, height: 2}, shadowOpacity: 0.8, shadowRadius: 2, borderWidth: 2, borderColor: '#000' },
   fabText: { fontSize: 35, color: '#000', fontWeight: 'bold', marginTop: -2 },
-  // Modal Formularios
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
   formCardModal: { backgroundColor: '#1a1a1a', padding: 20, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '85%' },
-  // Estilos Generales
   formCard: { backgroundColor: '#1a1a1a', padding: 15, borderRadius: 10, marginBottom: 15 },
   formTitle: { color: '#fff', marginBottom: 5, fontWeight: 'bold', fontSize: 18 },
   input: { backgroundColor: '#000', color: '#fff', padding: 10, borderRadius: 6, borderWidth: 1, borderColor: '#333' },
@@ -303,5 +274,6 @@ const styles = StyleSheet.create({
   chipCat: { backgroundColor: '#222', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 15, marginRight: 8, borderWidth: 1, borderColor: '#444' },
   intervaloToggle: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#000', padding: 12, borderRadius: 6, borderWidth: 1, borderColor: '#333', marginTop: 5 },
   chipArtista: { backgroundColor: '#000', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#444' },
-  chipArtistaActive: { backgroundColor: '#deff9a', borderColor: '#deff9a' }
+  chipArtistaActive: { backgroundColor: '#deff9a', borderColor: '#deff9a' },
+  btnMarcar: { backgroundColor: '#ccc', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, marginLeft: 10 }
 });
