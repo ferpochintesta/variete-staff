@@ -15,10 +15,18 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "package": "variete.staff"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "firebaseApiKey": "AIzaSyChDw575RfnFUqD3ec4gjipX3IlvCtuwOM",
+      "firebaseAuthDomain": "variete-3464e.firebaseapp.com",
+      "eas": {
+        "projectId": "49c5fbb0-b2eb-4dbb-9abf-264086dfc372"
+      }
     }
   }
 }

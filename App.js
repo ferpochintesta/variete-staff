@@ -5,6 +5,8 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
 import { db } from './firebase'; 
 import { collection, onSnapshot, doc, setDoc, updateDoc } from 'firebase/firestore';
+import { auth } from './firebase'; // <--- 1. Importa el auth que exportamos
+import { signInAnonymously } from 'firebase/auth'; // <--- 2. Importa la función de login
 
 // Importamos las pantallas
 import PorteriaScreen from './screens/Porteria';
@@ -85,6 +87,12 @@ const GlobalHeader = () => {
 };
 
 export default function App() {
+  useEffect(() => {
+    signInAnonymously(auth)
+      .then(() => console.log("Staff autenticado como usuario anónimo"))
+      .catch((error) => console.error("Error al autenticar:", error));
+  }, []);
+  
   return (
     <NavigationContainer>
       <View style={styles.appContainer}>
