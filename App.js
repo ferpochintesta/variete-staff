@@ -3,16 +3,15 @@ import { View, Text, StyleSheet, TouchableOpacity, Modal } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
-// 1. Descomentamos y agregamos las herramientas de Firebase
 import { db } from './firebase'; 
 import { collection, onSnapshot, doc, setDoc, updateDoc } from 'firebase/firestore';
 
-const Tab = createBottomTabNavigator();
-
+// Importamos las pantallas
 import PorteriaScreen from './screens/Porteria';
 import BarraScreen from './screens/Barra';
-const EventoScreen = () => <View style={styles.screen}><Text style={styles.text}>Módulo Evento</Text></View>;
-const PuntosScreen = () => <View style={styles.screen}><Text style={styles.text}>Módulo Puntos</Text></View>;
+import EventoScreen from './screens/Evento';
+
+const Tab = createBottomTabNavigator();
 
 // --- COMPONENTE CABECERA GLOBAL ---
 const GlobalHeader = () => {
@@ -21,27 +20,22 @@ const GlobalHeader = () => {
   const [modalVisible, setModalVisible] = useState(false);
 
   useEffect(() => {
-    // Escuchamos la colección de órdenes para contar los que realmente ingresaron
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
       let total = 0;
       snapshot.forEach(docSnap => {
         const data = docSnap.data();
         if (data.status === 'pagado' || data.isManual) {
-          // Sumamos los QRs escaneados
           if (data.ingresados) total += data.ingresados.length;
-          // Sumamos las ventas manuales de entradas en puerta
           if (data.isManual && data.tipo === 'entrada') total += 1;
         }
       });
       setIngresosSistema(total);
     });
 
-    // Escuchamos un documento especial para los ajustes manuales (gente que se va)
     const unsubMeta = onSnapshot(doc(db, 'metadata', 'puerta'), (docSnap) => {
       if (docSnap.exists()) {
         setAjusteManual(docSnap.data().ajusteManual || 0);
       } else {
-        // Si no existe, lo creamos
         setDoc(doc(db, 'metadata', 'puerta'), { ajusteManual: 0 });
       }
     });
@@ -60,12 +54,10 @@ const GlobalHeader = () => {
     <View style={styles.headerContainer}>
       <Text style={styles.headerTitle}>Varieté Staff</Text>
       
-      {/* Botón que abre el Modal */}
       <TouchableOpacity style={styles.counterBadge} onPress={() => setModalVisible(true)}>
         <Text style={styles.counterText}>👥 Adentro: {totalAdentro}</Text>
       </TouchableOpacity>
 
-      {/* Modal de Ajuste Manual */}
       <Modal visible={modalVisible} transparent={true} animationType="fade">
         <View style={styles.modalBg}>
           <View style={styles.modalCard}>
@@ -98,17 +90,20 @@ export default function App() {
       <View style={styles.appContainer}>
         <GlobalHeader />
         <Tab.Navigator
+          initialRouteName="Evento"
           screenOptions={{
             headerShown: false,
-            tabBarStyle: { backgroundColor: '#1a1a1a', borderTopColor: '#333' },
+            // AQUÍ REMOVEMOS LOS ÍCONOS Y CENTRAMOS EL TEXTO
+            tabBarStyle: { backgroundColor: '#1a1a1a', borderTopColor: '#333', height: 60, paddingBottom: 10 },
+            tabBarIconStyle: { display: 'none' }, // Oculta el cuadrado roto
+            tabBarLabelStyle: { fontSize: 16, fontWeight: 'bold', textAlign: 'center', marginTop: 15 },
             tabBarActiveTintColor: '#deff9a',
             tabBarInactiveTintColor: '#888',
           }}
         >
+          <Tab.Screen name="Evento" component={EventoScreen} />
           <Tab.Screen name="Portería" component={PorteriaScreen} />
           <Tab.Screen name="Barra" component={BarraScreen} />
-          <Tab.Screen name="Evento" component={EventoScreen} />
-          <Tab.Screen name="Puntos" component={PuntosScreen} />
         </Tab.Navigator>
       </View>
     </NavigationContainer>
@@ -121,9 +116,6 @@ const styles = StyleSheet.create({
   headerTitle: { color: '#deff9a', fontSize: 20, fontWeight: 'bold' },
   counterBadge: { backgroundColor: '#333', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 15, borderWidth: 1, borderColor: '#555' },
   counterText: { color: '#fff', fontWeight: 'bold' },
-  screen: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
-  text: { color: '#fff', fontSize: 18 },
-  // Estilos del Modal
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   modalCard: { backgroundColor: '#1a1a1a', padding: 25, borderRadius: 15, width: '100%', borderWidth: 1, borderColor: '#333' },
   modalTitle: { color: '#deff9a', fontSize: 22, fontWeight: 'bold', marginBottom: 15, textAlign: 'center' },
