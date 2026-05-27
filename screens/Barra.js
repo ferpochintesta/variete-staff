@@ -10,24 +10,18 @@ export default function BarraScreen() {
   const [pedidoData, setPedidoData] = useState(null);
   const [modo, setModo] = useState('escaner'); 
   
-  // Estado para el buscador manual de QR
   const [idBuscador, setIdBuscador] = useState('');
-
-  // Estados para Inventario y Ventas
   const [productos, setProductos] = useState([]);
   const [ventasBarra, setVentasBarra] = useState([]);
   
-  // Estados Formulario de Stock
   const [prodNombre, setProdNombre] = useState('');
   const [prodPrecio, setProdPrecio] = useState('');
   const [prodStock, setProdStock] = useState(''); 
   const [prodCategoria, setProdCategoria] = useState('bebida');
 
-  // Estado para el Carrito de Ventas Manuales
   const [cartManual, setCartManual] = useState({});
 
   useEffect(() => {
-    // 1. Escuchamos los productos (Stock)
     const unsubProductos = onSnapshot(collection(db, 'productosBarra'), (snapshot) => {
       let lista = [];
       snapshot.forEach((doc) => lista.push({ id: doc.id, ...doc.data() }));
@@ -35,7 +29,6 @@ export default function BarraScreen() {
       setProductos(lista);
     });
 
-    // 2. Escuchamos todas las órdenes para el historial y los resúmenes
     const unsubOrders = onSnapshot(collection(db, 'orders'), (snapshot) => {
       let ordenes = [];
       snapshot.forEach((docSnap) => {
@@ -43,12 +36,10 @@ export default function BarraScreen() {
         const hasBarItems = data.items && data.items.some(i => !i.id.startsWith('ent'));
         const isManualBar = data.isManual && data.tipo === 'barra';
         
-        // Filtramos solo las órdenes pagadas que tengan consumiciones o sean ventas de barra
         if (data.status === 'pagado' && (hasBarItems || isManualBar)) {
           ordenes.push({ id: docSnap.id, ...data });
         }
       });
-      // Ordenamos por las más recientes arriba
       ordenes.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
       setVentasBarra(ordenes);
     });
@@ -56,15 +47,24 @@ export default function BarraScreen() {
     return () => { unsubProductos(); unsubOrders(); };
   }, []);
 
-  // --- LÓGICA DEL ESCÁNER Y BUSCADOR ---
-  const procesarCodigo = async (codigo) => {
-    if (codigo.includes('-T')) {
-      Alert.alert("QR Incorrecto", "Este código es una Entrada. Escanealo en Portería.");
+  // --- LÓGICA DEL ESCÁNER Y BUSCADOR INTELIGENTE ---
+  const procesarCodigo = async (codigoBruto) => {
+    // 1. Limpiamos espacios
+    const codigoLimpio = codigoBruto.replace(/\s+/g, '').trim();
+    if (!codigoLimpio) return;
+
+    // 2. Extraemos el primer número
+    const primerDigito = parseInt(codigoLimpio.charAt(0));
+
+    // 3. INTELIGENCIA: Si empieza del 7 al 9, sabemos que es de Portería
+    if (primerDigito >= 7 && primerDigito <= 9) {
+      Alert.alert("🛑 QR Incorrecto", "Este código es una ENTRADA. Decile a la persona que lo muestre en la puerta.", [{ text: "Entendido", onPress: () => setScanned(false) }]);
       return;
     }
+
     setScanned(true); setLoading(true);
     try {
-      const docRef = doc(db, 'orders', codigo.trim());
+      const docRef = doc(db, 'orders', codigoLimpio);
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
@@ -72,15 +72,15 @@ export default function BarraScreen() {
         const consumiciones = order.items ? order.items.filter(i => !i.id.startsWith('ent')) : [];
 
         if (consumiciones.length === 0) {
-          Alert.alert("Pedido sin Barra", "Este pedido no incluye productos.");
+          Alert.alert("Pedido sin Barra", "Este pedido no incluye productos.", [{ text: "OK", onPress: () => setScanned(false) }]);
         } else {
           setPedidoData({ orderId: docSnap.id, items: consumiciones, yaEntregado: order.barraEntregada || false });
           setIdBuscador('');
         }
       } else {
-        Alert.alert("Error", "Pedido no encontrado.");
+        Alert.alert("Error", "Pedido no encontrado.", [{ text: "OK", onPress: () => setScanned(false) }]);
       }
-    } catch (error) { Alert.alert("Error", "Fallo al conectar."); }
+    } catch (error) { Alert.alert("Error", "Fallo al conectar.", [{ text: "OK", onPress: () => setScanned(false) }]); }
     setLoading(false);
   };
 
@@ -88,7 +88,6 @@ export default function BarraScreen() {
     if (!pedidoData) return;
     setLoading(true);
     try {
-      // SOLO marcamos como entregado, el stock ya se descontó al comprar
       await updateDoc(doc(db, 'orders', pedidoData.orderId), { barraEntregada: true, barraEntregadoAt: new Date() });
       Alert.alert("✅ Despachado", "Productos entregados.");
       setPedidoData(null); setScanned(false);
@@ -101,7 +100,7 @@ export default function BarraScreen() {
     setCartManual(prev => {
       const currentQty = prev[item.id]?.quantity || 0;
       const newQty = currentQty + delta;
-      if (delta > 0 && item.stock !== null && newQty > item.stock) return prev; // Bloquea si no hay stock
+      if (delta > 0 && item.stock !== null && newQty > item.stock) return prev; 
       const newCart = { ...prev };
       if (newQty <= 0) delete newCart[item.id];
       else newCart[item.id] = { ...item, quantity: newQty };
@@ -117,13 +116,11 @@ export default function BarraScreen() {
     try {
       const itemsToBuy = Object.values(cartManual).map(i => ({ id: i.id, name: i.name, quantity: i.quantity, price: i.price }));
       
-      // 1. Crear la orden de barra (ya nace como entregada porque es compra presencial)
       await addDoc(collection(db, 'orders'), {
         isManual: true, tipo: 'barra', items: itemsToBuy, total: totalManual, status: 'pagado', 
         barraEntregada: true, metodoPago: 'efectivo', createdAt: new Date()
       });
 
-      // 2. Descontar el stock real en la base de datos
       for (const item of itemsToBuy) {
         const prod = productos.find(p => p.id === item.id);
         if (prod && prod.stock !== null) {
@@ -142,7 +139,6 @@ export default function BarraScreen() {
       { text: "Cancelar", style: "cancel" },
       { text: "Borrar", style: "destructive", onPress: async () => {
           setLoading(true);
-          // 1. Restaurar el stock
           if (orden.items) {
             for (const item of orden.items) {
               const prod = productos.find(p => p.id === item.id);
@@ -151,14 +147,12 @@ export default function BarraScreen() {
               }
             }
           }
-          // 2. Borrar la orden
           await deleteDoc(doc(db, 'orders', orden.id));
           setLoading(false);
       }}
     ]);
   };
 
-  // --- CÁLCULO DEL RESUMEN ---
   const calcularResumen = (productoId) => {
     let vendidos = 0;
     let entregados = 0;
@@ -174,7 +168,6 @@ export default function BarraScreen() {
     return { vendidos, entregados };
   };
 
-  // --- LÓGICA DE STOCK (Crear y Eliminar del menú) ---
   const agregarProducto = async () => {
     if (!prodNombre || !prodPrecio) return Alert.alert("Datos incompletos", "El nombre y el precio son obligatorios.");
     setLoading(true);
@@ -187,10 +180,8 @@ export default function BarraScreen() {
     Alert.alert("Eliminar", "¿Borrar este producto del menú?", [{ text: "Cancelar", style: "cancel" }, { text: "Borrar", style: "destructive", onPress: async () => await deleteDoc(doc(db, 'productosBarra', id)) }]);
   };
 
-  // --- RENDERIZADOS ---
   return (
     <View style={styles.container}>
-      {/* TABS */}
       <View style={styles.tabs}>
         <TouchableOpacity style={[styles.tab, modo === 'escaner' && styles.tabActive]} onPress={() => setModo('escaner')}>
           <Text style={[styles.tabText, modo === 'escaner' && styles.tabTextActive]}>📷 Escáner</Text>
@@ -203,7 +194,6 @@ export default function BarraScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* MODO ESCÁNER */}
       {modo === 'escaner' && (
         <>
           <View style={styles.cameraContainer}>
@@ -214,7 +204,7 @@ export default function BarraScreen() {
           <View style={styles.panel}>
             {!pedidoData && (
               <View style={styles.buscadorContainer}>
-                <TextInput style={styles.inputBuscador} placeholder="ID..." placeholderTextColor="#666" value={idBuscador} onChangeText={setIdBuscador} autoCapitalize="none" />
+                <TextInput style={styles.inputBuscador} placeholder="ID (Ej: 145 192)" placeholderTextColor="#666" value={idBuscador} onChangeText={setIdBuscador} keyboardType="numeric" autoCapitalize="none" />
                 <TouchableOpacity style={styles.btnBuscar} onPress={() => procesarCodigo(idBuscador)} disabled={loading}>
                   <Text style={{fontWeight: 'bold'}}>{loading ? '...' : 'Buscar'}</Text>
                 </TouchableOpacity>
@@ -244,11 +234,8 @@ export default function BarraScreen() {
         </>
       )}
 
-      {/* MODO VENTAS (Scrollable) */}
       {modo === 'pedidos' && (
         <ScrollView style={styles.listaContainer} contentContainerStyle={{paddingBottom: 40}}>
-          
-          {/* A. Venta Manual (POS) */}
           <View style={styles.manualForm}>
             <Text style={{ color: '#fff', marginBottom: 15, fontWeight: 'bold', fontSize: 18 }}>💵 Venta Efectivo en Barra</Text>
             {productos.map(item => {
@@ -277,7 +264,6 @@ export default function BarraScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* B. Resumen de Artículos */}
           <Text style={styles.sectionTitle}>📊 Resumen de Artículos</Text>
           <View style={styles.resumenContainer}>
             {productos.map(prod => {
@@ -295,7 +281,6 @@ export default function BarraScreen() {
             })}
           </View>
 
-          {/* C. Historial de Ventas */}
           <Text style={styles.sectionTitle}>📝 Historial de Ventas</Text>
           {ventasBarra.map((orden) => (
             <View key={orden.id} style={styles.historialCard}>
@@ -309,11 +294,9 @@ export default function BarraScreen() {
               </TouchableOpacity>
             </View>
           ))}
-
         </ScrollView>
       )}
 
-      {/* MODO STOCK */}
       {modo === 'stock' && (
         <View style={styles.listaContainer}>
           <View style={styles.manualForm}>

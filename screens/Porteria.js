@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, FlatList, TextInput } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { db } from '../firebase';
-import { doc, getDoc, updateDoc, arrayUnion, collection, onSnapshot, addDoc, deleteDoc } from 'firebase/firestore';
+// NUEVO: Agregamos query, where y getDocs para buscar el ticket único
+import { doc, getDoc, updateDoc, arrayUnion, collection, onSnapshot, addDoc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
 
 export default function PorteriaScreen() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -14,8 +15,6 @@ export default function PorteriaScreen() {
   const [asistentes, setAsistentes] = useState([]);
   const [nombreManual, setNombreManual] = useState('');
   const [precioManual, setPrecioManual] = useState('');
-  
-  // NUEVO: Estado para el ID manual del escáner
   const [idBuscador, setIdBuscador] = useState('');
 
   useEffect(() => {
@@ -29,10 +28,11 @@ export default function PorteriaScreen() {
           if (data.items) {
             const entradas = data.items.filter(i => i.id.startsWith('ent'));
             entradas.forEach(ent => {
-              const asisList = ent.asistentes || ['Asistente sin nombre'];
-              asisList.forEach((nombre, idx) => {
-                const yaIngreso = data.ingresados && data.ingresados.includes(idx.toString());
-                lista.push({ id: `${docSnap.id}-${idx}`, nombre, tipo: 'Web', yaIngreso, refId: docSnap.id });
+              // NUEVO: Ahora extraemos la data real con el ID único
+              const asisList = ent.asistentesData || [];
+              asisList.forEach((asis) => {
+                const yaIngreso = data.ingresados && data.ingresados.includes(asis.ticketId);
+                lista.push({ id: asis.ticketId, nombre: asis.nombre, tipo: 'Web', yaIngreso, refId: docSnap.id });
               });
             });
           }
@@ -47,41 +47,40 @@ export default function PorteriaScreen() {
     return () => unsubscribe();
   }, [modo]);
 
-  // --- LÓGICA DEL ESCÁNER Y BUSCADOR MANUAL ---
-  // Extraje el motor de búsqueda para usarlo con la cámara y con el texto
+  // --- LÓGICA DEL ESCÁNER Y BUSCADOR INTELIGENTE ---
   const procesarCodigo = async (codigoBruto) => {
     setScanned(true);
     setLoading(true);
     try {
-      // Inteligencia: Si el staff pone solo "1234", asumimos que es el ticket 0 ("1234-T0")
-      const codigoSeguro = codigoBruto.includes('-T') ? codigoBruto : `${codigoBruto}-T0`;
-      
-      const parts = codigoSeguro.split('-T');
-      const orderId = parts[0];
-      const ticketIndex = parts[1];
+      // 1. Limpiamos espacios (por si lo tipearon a mano como "789 123")
+      const codigoLimpio = codigoBruto.replace(/\s+/g, '').trim();
+      if (!codigoLimpio) { setLoading(false); setScanned(false); return; }
 
-      const docRef = doc(db, 'orders', orderId);
-      const docSnap = await getDoc(docRef);
+      // 2. Extraemos el primer número
+      const primerDigito = parseInt(codigoLimpio.charAt(0));
 
-      if (docSnap.exists()) {
+      // 3. INTELIGENCIA: Si empieza del 1 al 6, sabemos que es de barra
+      if (primerDigito >= 1 && primerDigito <= 6) {
+         Alert.alert("🛑 QR Incorrecto", "Este código es una CONSUMICIÓN. Decile a la persona que vaya a la barra.", [{ text: "Entendido", onPress: () => setScanned(false) }]);
+         setLoading(false); return;
+      }
+
+      // 4. Si pasó el filtro, es una entrada (7, 8 o 9). Buscamos la orden dueña de este ID.
+      const q = query(collection(db, 'orders'), where('entradasIds', 'array-contains', codigoLimpio));
+      const querySnapshot = await getDocs(q);
+
+      if (!querySnapshot.empty) {
+        const docSnap = querySnapshot.docs[0];
         const order = docSnap.data();
-        // Validar que tenga entradas
-        const tieneEntradas = order.items && order.items.some(i => i.id.startsWith('ent'));
-        if (!tieneEntradas && !order.isManual) {
-            Alert.alert("QR Incorrecto", "Este código es de consumición de barra.", [{ text: "OK", onPress: () => setScanned(false) }]);
-            setLoading(false); return;
-        }
 
-        const yaIngreso = order.ingresados && order.ingresados.includes(ticketIndex);
-        setTicketData({ orderId, ticketIndex, yaIngreso });
-        setIdBuscador(''); // Limpiamos el buscador
+        const yaIngreso = order.ingresados && order.ingresados.includes(codigoLimpio);
+        setTicketData({ orderId: docSnap.id, ticketId: codigoLimpio, yaIngreso });
+        setIdBuscador(''); 
       } else {
-        Alert.alert("Error", "Entrada no encontrada en la base de datos.");
-        setScanned(false);
+        Alert.alert("Error", "Entrada no encontrada en la base de datos.", [{ text: "OK", onPress: () => setScanned(false) }]);
       }
     } catch (error) {
-      Alert.alert("Error", "Fallo de conexión.");
-      setScanned(false);
+      Alert.alert("Error", "Fallo de conexión.", [{ text: "OK", onPress: () => setScanned(false) }]);
     }
     setLoading(false);
   };
@@ -89,7 +88,7 @@ export default function PorteriaScreen() {
   const handleBarCodeScanned = ({ data }) => procesarCodigo(data);
   const buscarIdManual = () => {
     if(!idBuscador) return;
-    procesarCodigo(idBuscador.trim());
+    procesarCodigo(idBuscador);
   };
 
   const confirmarIngreso = async () => {
@@ -97,7 +96,8 @@ export default function PorteriaScreen() {
     setLoading(true);
     try {
       const docRef = doc(db, 'orders', ticketData.orderId);
-      await updateDoc(docRef, { ingresados: arrayUnion(ticketData.ticketIndex) });
+      // Guardamos el ID único de 6 números como ingresado
+      await updateDoc(docRef, { ingresados: arrayUnion(ticketData.ticketId) });
       Alert.alert("✅ Éxito", "Ingreso registrado.");
       setTicketData(null);
       setScanned(false);
@@ -124,22 +124,15 @@ export default function PorteriaScreen() {
 
   const ingresarDesdeLista = async (item) => {
     try {
-      const idx = item.id.split('-')[1]; // Extraemos si es ticket 0, 1, 2...
-      await updateDoc(doc(db, 'orders', item.refId), { ingresados: arrayUnion(idx) });
+      await updateDoc(doc(db, 'orders', item.refId), { ingresados: arrayUnion(item.id) });
     } catch (e) { Alert.alert("Error", "No se pudo ingresar."); }
   };
 
   const eliminarAsistente = (item) => {
-    Alert.alert(
-      "Eliminar Registro", 
-      `¿Seguro que querés eliminar el registro de ${item.nombre} de la base de datos? Esto no se puede deshacer.`,
-      [
-        { text: "Cancelar", style: "cancel" },
-        { text: "Borrar", style: "destructive", onPress: async () => {
-            await deleteDoc(doc(db, 'orders', item.refId));
-        }}
-      ]
-    );
+    Alert.alert("Eliminar Registro", `¿Seguro que querés eliminar a ${item.nombre}?`, [
+      { text: "Cancelar", style: "cancel" },
+      { text: "Borrar", style: "destructive", onPress: async () => await deleteDoc(doc(db, 'orders', item.refId)) }
+    ]);
   };
 
   // --- RENDERIZADO ---
@@ -170,25 +163,14 @@ export default function PorteriaScreen() {
           </View>
           <View style={styles.panel}>
             
-            {/* NUEVO: Buscador de ID Manual */}
             {!ticketData && (
               <View style={styles.buscadorContainer}>
-                <TextInput 
-                  style={styles.inputBuscador} 
-                  placeholder="ID..." 
-                  placeholderTextColor="#666"
-                  value={idBuscador}
-                  onChangeText={setIdBuscador}
-                  autoCapitalize="none"
-                />
-                <TouchableOpacity style={styles.btnBuscar} onPress={buscarIdManual} disabled={loading}>
-                  <Text style={{fontWeight: 'bold'}}>{loading ? '...' : 'Buscar'}</Text>
-                </TouchableOpacity>
+                <TextInput style={styles.inputBuscador} placeholder="ID (Ej: 745 192)" placeholderTextColor="#666" value={idBuscador} onChangeText={setIdBuscador} keyboardType="numeric" autoCapitalize="none" />
+                <TouchableOpacity style={styles.btnBuscar} onPress={buscarIdManual} disabled={loading}><Text style={{fontWeight: 'bold'}}>{loading ? '...' : 'Buscar'}</Text></TouchableOpacity>
               </View>
             )}
 
             {loading && <ActivityIndicator size="large" color="#deff9a" style={{marginTop: 20}} />}
-            
             {!loading && !ticketData && <Text style={styles.infoText}>Apuntá a un QR o ingresá el ID manualmente.</Text>}
             
             {!loading && ticketData && (
@@ -196,7 +178,7 @@ export default function PorteriaScreen() {
                 <Text style={[styles.statusTitle, { color: ticketData.yaIngreso ? '#ff4d4d' : '#deff9a' }]}>
                   {ticketData.yaIngreso ? '🔴 YA INGRESADO' : '🟢 ENTRADA VÁLIDA'}
                 </Text>
-                <Text style={{color: '#aaa', textAlign: 'center', marginBottom: 10}}>Ticket #: {ticketData.ticketIndex}</Text>
+                <Text style={{color: '#aaa', textAlign: 'center', marginBottom: 10}}>Ticket ID: {ticketData.ticketId}</Text>
                 <View style={styles.actions}>
                   <TouchableOpacity style={[styles.btnAccion, { backgroundColor: ticketData.yaIngreso ? '#555' : '#deff9a' }]} disabled={ticketData.yaIngreso} onPress={confirmarIngreso}>
                     <Text style={{ fontWeight: 'bold', color: ticketData.yaIngreso ? '#aaa' : '#000' }}>{ticketData.yaIngreso ? 'Usada' : 'Dar Ingreso'}</Text>
@@ -225,31 +207,24 @@ export default function PorteriaScreen() {
           </View>
 
           <Text style={{ color: '#deff9a', marginVertical: 10, fontWeight: 'bold', fontSize: 16 }}>Asistentes Registrados</Text>
-          <FlatList
-            data={asistentes}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => (
+          <FlatList data={asistentes} keyExtractor={(item) => item.id} renderItem={({ item }) => (
               <View style={styles.listItem}>
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: '#fff', fontSize: 16 }}>{item.nombre}</Text>
-                  <Text style={{ color: '#888', fontSize: 12 }}>Origen: {item.tipo}</Text>
+                  <Text style={{ color: '#888', fontSize: 12 }}>Origen: {item.tipo} {item.tipo === 'Web' && `(${item.id})`}</Text>
                 </View>
                 
-                {/* NUEVO: Botonera de la lista */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   {!item.yaIngreso ? (
                     <TouchableOpacity style={styles.btnListaIngreso} onPress={() => ingresarDesdeLista(item)}>
                       <Text style={{ color: '#000', fontWeight: 'bold', fontSize: 12 }}>Ingresar</Text>
                     </TouchableOpacity>
-                  ) : (
-                    <Text style={{ color: '#deff9a', fontWeight: 'bold', fontSize: 13 }}>✓ Adentro</Text>
-                  )}
+                  ) : (<Text style={{ color: '#deff9a', fontWeight: 'bold', fontSize: 13 }}>✓ Adentro</Text>)}
                   
                   <TouchableOpacity style={styles.btnListaBorrar} onPress={() => eliminarAsistente(item)}>
                     <Text style={{ color: '#fff', fontSize: 14 }}>🗑️</Text>
                   </TouchableOpacity>
                 </View>
-
               </View>
             )}
           />
@@ -282,7 +257,6 @@ const styles = StyleSheet.create({
   input: { backgroundColor: '#000', color: '#fff', padding: 10, borderRadius: 6, borderWidth: 1, borderColor: '#333' },
   btnManual: { backgroundColor: '#deff9a', padding: 12, borderRadius: 6, alignItems: 'center', marginTop: 10 },
   listItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1a1a1a', padding: 15, borderRadius: 8, marginBottom: 8 },
-  // Nuevos estilos para el buscador y botones de lista
   buscadorContainer: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   inputBuscador: { flex: 1, backgroundColor: '#000', color: '#fff', padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#333' },
   btnBuscar: { backgroundColor: '#deff9a', paddingHorizontal: 20, justifyContent: 'center', borderRadius: 8 },
